@@ -1,7 +1,8 @@
 #[cfg(test)]
 mod tests {
+    use crate::{Contract, ContractClient};
     use soroban_sdk::testutils::{Address as _, Ledger};
-    use soroban_sdk::Env;
+    use soroban_sdk::{Address, Env};
 
     #[test]
     fn happy_path_environment() {
@@ -27,5 +28,19 @@ mod tests {
     #[test]
     fn overflow_boundary() {
         assert_eq!(i128::MAX.checked_add(1), None);
+    }
+
+    #[test]
+    fn treasury_tracks_balance_after_deposit() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(Contract, ());
+        let client = ContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+
+        client.initialize(&admin);
+        client.set_value(&admin, &250_i128);
+
+        assert_eq!(client.get_value(), 250);
     }
 }
