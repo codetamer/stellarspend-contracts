@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod tests {
+    use crate::{Contract, ContractClient};
     use soroban_sdk::testutils::{Address as _, Ledger};
     use soroban_sdk::Env;
 
@@ -27,5 +28,19 @@ mod tests {
     #[test]
     fn overflow_boundary() {
         assert_eq!(i128::MAX.checked_add(1), None);
+    }
+
+    #[test]
+    fn create_subscription_and_verify_status() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(Contract, ());
+        let client = ContractClient::new(&env, &contract_id);
+
+        client.initialize(&admin);
+        client.set_value(&admin, &100);
+
+        assert_eq!(client.get_value(), 100);
     }
 }

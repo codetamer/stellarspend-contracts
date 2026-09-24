@@ -236,4 +236,16 @@ mod tests {
         let result = client.try_initialize(&admin);
         assert_eq!(result, Err(Ok(Error::AlreadyInitialized)));
     }
+
+    #[test]
+    fn set_limit_record_spend_verify_remaining() {
+        let (env, client, _admin) = setup();
+        let user = Address::generate(&env);
+        let xlm = asset(&env);
+
+        client.set_limit(&user, &xlm, &100, &daily(&env));
+        client.record_spend(&user, &xlm, &30);
+
+        assert_eq!(client.get_remaining(&user, &xlm), 70);
+    }
 }
