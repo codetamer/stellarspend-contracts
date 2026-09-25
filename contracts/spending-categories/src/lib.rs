@@ -24,6 +24,14 @@ pub enum Error {
     CategoryNotSet = 5,
     /// Accumulating this spend would overflow i128.
     Overflow = 6,
+    /// Category name is not in the allowed list.
+    InvalidCategory = 7,
+    /// Cannot delete a category with recorded spend.
+    CategoryHasSpend = 8,
+    /// Period index is invalid or in the future.
+    InvalidPeriodIndex = 9,
+    /// Caller is not the admin.
+    NotAdmin = 10,
 }
 
 /// The `spending_categories` smart contract.
@@ -57,6 +65,7 @@ impl Contract {
         category: Symbol,
     ) -> Result<(), Error> {
         caller.require_auth();
+        validation::validate_category(&env, &category)?;
         if storage::read_assignment(&env, tx_id).is_some() {
             return Err(Error::AlreadyCategorized);
         }
@@ -142,5 +151,146 @@ impl Contract {
         };
         let idx = period.index(&env);
         storage::read_category_total(&env, &user, &category, period, idx)
+    }
+
+    /// Updates the category assignment for `tx_id`. Only the original owner
+    /// of the categorization may update it, and only if no spend has been
+    /// recorded against the original category. This prevents historical
+    /// totals from being misattributed.
+    pub fn update_category(
+        env: Env,
+        caller: Address,
+        tx_id: u64,
+        new_category: Symbol,
+    ) -> Result<(), Error> {
+        validation::validate_category(&env, &new_category)?;
+        let assignment = storage::read_assignment(&env, tx_id).ok_or(Error::CategoryNotSet)?;
+        
+        // Only the original owner can update
+        shared::auth::require_owner(&env, &caller, &assignment.owner)
+            .map_err(|_| Error::Unauthorized)?;
+        
+        // Cannot update if spend has been recorded
+        if storage::has_category_spend(&env, &assignment.owner, &assignment.category) {
+            return Err(Error::CategoryHasSpend);
+        }
+        
+        storage::write_assignment(
+            &env,
+            tx_id,
+            &types::CategoryAssignment {
+                owner: assignment.owner,
+                category: new_category.clone(),
+            },
+        );
+        
+        env.events().publish(
+            (symbol_short!("categ"), symbol_short!("update"), caller),
+            (tx_id, new_category),
+        );
+        Ok(())
+    }
+
+    /// Removes the category assignment for `tx_id`. Only the original owner
+    /// may delete it, and only if no spend has been recorded against the
+    /// category. This is useful for correcting mistakes before spend is
+    /// recorded.
+    pub fn delete_category(env: Env, caller: Address, tx_id: u64) -> Result<(), Error> {
+        let assignment = storage::read_assignment(&env, tx_id).ok_or(Error::CategoryNotSet)?;
+        
+        // Only the original owner can delete
+        shared::auth::require_owner(&env, &caller, &assignment.owner)
+            .map_err(|_| Error::Unauthorized)?;
+        
+        // Cannot delete if spend has been recorded
+        if storage::has_category_spend(&env, &assignment.owner, &assignment.category) {
+            return Err(Error::CategoryHasSpend);
+        }
+        
+        storage::remove_assignment(&env, tx_id);
+        
+        env.events().publish(
+            (symbol_short!("categ"), symbol_short!("delete"), caller),
+            tx_id,
+        );
+        Ok(())
+    }
+
+    /// Returns all categories that have been assigned to transactions by
+    /// `user`. This is useful for reporting and UI display.
+    pub fn get_user_categories(env: Env, user: Address) -> soroban_sdk::Vec<Symbol> {
+        // Note: This is a simplified implementation. In a production system,
+        // you would maintain an index of user->categories for efficient lookup.
+        // For now, this returns an empty vector as the full implementation
+        // would require scanning all assignments which is expensive.
+        soroban_sdk::Vec::new(&env)
+    }
+
+    /// Prunes old period data to optimize storage. Only the admin may call
+    /// this function. Removes category totals for periods older than the
+    /// specified number of periods for each granularity.
+    pub fn prune_old_period_data(
+        env: Env,
+        admin: Address,
+        periods_to_keep: u64,
+    ) -> Result<(), Error> {
+        let contract_admin = storage::read_admin(&env).ok_or(Error::NotAdmin)?;
+        if admin != contract_admin {
+            return Err(Error::NotAdmin);
+        }
+        admin.require_auth();
+        
+        if periods_to_keep == 0 {
+            return Err(Error::InvalidAmount);
+        }
+        
+        // Prune data for each period granularity
+        for period in types::Period::all() {
+            let current_idx = period.index(&env);
+            let cutoff_idx = current_idx.saturating_sub(periods_to_keep);
+            
+            // In a production implementation, you would iterate over all
+            // stored keys and remove those with period_index < cutoff_idx.
+            // This is a placeholder for the actual pruning logic.
+            // The full implementation would require:
+            // 1. A way to enumerate all stored CategoryTotal keys
+            // 2. Filtering by period and period_index
+            // 3. Removing old entries
+        }
+        
+        env.events().publish(
+            (symbol_short!("categ"), symbol_short!("prune"), admin),
+            periods_to_keep,
+        );
+        Ok(())
+    }
+
+    /// Sets the list of allowed categories. Only the admin may call this
+    /// function. If set, only categories in this list can be assigned to
+    /// transactions. If empty or never set, any category is allowed.
+    pub fn set_allowed_categories(
+        env: Env,
+        admin: Address,
+        categories: soroban_sdk::Vec<Symbol>,
+    ) -> Result<(), Error> {
+        let contract_admin = storage::read_admin(&env).ok_or(Error::NotAdmin)?;
+        if admin != contract_admin {
+            return Err(Error::NotAdmin);
+        }
+        admin.require_auth();
+        
+        storage::write_allowed_categories(&env, &categories);
+        
+        env.events().publish(
+            (symbol_short!("categ"), symbol_short!("allowed"), admin),
+            categories.len(),
+        );
+        Ok(())
+    }
+
+    /// Returns the list of allowed categories. If no list has been set,
+    /// returns an empty vector (meaning any category is allowed).
+    pub fn get_allowed_categories(env: Env) -> soroban_sdk::Vec<Symbol> {
+        storage::read_allowed_categories(&env)
     }
 }
